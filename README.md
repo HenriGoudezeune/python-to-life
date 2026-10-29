@@ -39,7 +39,7 @@ python -m gol.editor
 Dit opent http://127.0.0.1:8765 in je browser, met links een code-editor en rechts de viewer.
 1. Schrijf een functie, of kies een voorbeeld.
 2. Klik **Compileer** (`Ctrl+Enter`). Er verschijnen velden voor de invoer, en het patroon wordt in de viewer geladen.
-3. Klik **▶ Speel af** (`Ctrl+Shift+Enter`). De viewer speelt het patroon live af, in 10, 30 of 90 seconden, en stopt vanzelf op de generatie waarop de uitgangen af te lezen zijn. Ondertussen controleert de server het resultaat. Op het einde zie je de uitkomst in Life naast die van Python. Zoom tijdens het afspelen in op een poort (`NOR#…`, `FAN#…`) om de botsingen te zien.
+3. Klik **▶ Speel af** (`Ctrl+Shift+Enter`). De viewer speelt het patroon live af, in 10, 30 of 90 seconden, en stopt vanzelf op de generatie waarop de uitgangen af te lezen zijn. Op het einde leest de editor de uitgangsgliders uit de levende cellen, geeft ze een label en zet de uitkomst in Life naast die van Python. Zoom tijdens het afspelen in op een poort (`NOR#…`, `FAN#…`) om de botsingen te zien.
 4. Fouten verschijnen met hun regelnummer, dat ook in de kantlijn gemarkeerd wordt.
 
 De server luistert alleen op je eigen computer.
@@ -55,7 +55,9 @@ python -m gol.compiler bestand.py [--func naam] [--inputs a=5,b=9] [-o uit.rle] 
 - `--drc`: geometrische controle op onbedoelde ontmoetingen tussen gliders.
 - `--html`: een HTML-pagina met de viewer en het patroon schrijven en openen.
 
-Voorbeelden staan in `examples/`: `add4.py`, `logic.py` (majority), `max2.py`, `popcount.py`.
+Voorbeelden staan in `examples/`: `add4.py`, `logic.py` (majority), `max2.py`, `popcount.py` en `seg7.py`.
+
+`seg7.py` is het spektakelstuk: een 7-segmentdecoder van ongeveer 230 poorten, 360 gliders en 1300 stillevens, 51 000 × 40 000 cellen groot, die rekent tot generatie 162 097. Speel hem af in de editor met de duur op 90 s.
 
 ### Als bibliotheek
 

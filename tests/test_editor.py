@@ -10,7 +10,8 @@ SRC = "def xor2(a: bool, b: bool) -> bool:\n    return a ^ b\n"
 def test_compile_and_run():
     c = editor.api_compile({"src": SRC, "inputs": {"a": "1", "b": "0"}})
     assert c["func"] == "xor2" and c["values"] == {"a": 1, "b": 0}
-    assert c["rle"].count("!") >= 1 and c["t_end"] > 0
+    assert c["rle"].count("!") >= 1 and c["t_end"] > 0 and c["python"] == 1
+    assert [p["cells"] is not None for p in c["probes"]] == [True]
     r = editor.api_run({"src": SRC, "inputs": {"a": 1, "b": 0}})
     assert r["ok"] and r["life"] == r["python"] == 1
 

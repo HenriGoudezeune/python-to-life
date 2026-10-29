@@ -211,15 +211,30 @@ function setProgress(gen, total) {
 
 let playToken = 0;
 
-/** Play the pattern live in the viewer up to t_end while the server checks the result. */
+/** Read the outputs from the live cells: each output bit is one glider at a known place. */
+function readOutputs(c, v) {
+  const vals = {}, labels = [];
+  for (const p of c.probes) {
+    let bit = p.const;
+    if (p.cells) {
+      bit = p.cells.every(([x, y]) => v.alive(x, y)) ? 1 : 0;
+      const [x, y] = p.cells[0];
+      labels.push({ x, y, text: `${p.name}[${p.bit}] = ${bit}` });
+    }
+    vals[p.name] = (vals[p.name] || 0) | (bit << p.bit);
+  }
+  v.addLabels(labels);
+  const names = c.outputs.map(([n]) => n);
+  return names.length === 1 && names[0] === "out" ? vals.out : names.map((n) => vals[n] || 0);
+}
+
+/** Play the pattern live in the viewer up to t_end, then read the result from the cells. */
 async function runIt() {
   if (busy || !compiled) return;
   const c = compiled, v = viewer(), token = ++playToken;
   busy = true; $("compile").disabled = $("run").disabled = true; $("stop").disabled = false;
   $("result").textContent = "";
   setStatus("Afspelen: de gliders rekenen nu. Zoom in de viewer in op een poort om de botsingen te zien.", false);
-  const check = post("/api/run", { src: src.value, inputs: inputValues() })
-    .then((r) => ({ r }), (e) => ({ e }));
   v.reset();
   const fps = 30, secs = +$("speed").value;
   v.play(Math.max(1, Math.ceil(c.t_end / (fps * secs))), c.t_end);
@@ -232,16 +247,13 @@ async function runIt() {
   if (token !== playToken || v.gen() < c.t_end) {
     setStatus(`Gestopt op generatie ${v.gen()}. Speel af om opnieuw te beginnen.`, false);
   } else {
-    setStatus("Uitgangen bereikt. De resultaatgliders vliegen nu rechts weg. Even wachten op de controle…", false);
-    const { r, e } = await check;
-    if (e) setStatus(e.message, true);
-    else {
-      $("result").innerHTML =
-        `Game of Life: <b>${fmt(r.life)}</b> &nbsp; Python: <b>${fmt(r.python)}</b> &nbsp; ` +
-        (r.ok ? `<span class="ok">✓ gelijk</span>` : `<span class="bad">✗ verschil</span>`);
-      setStatus(`Klaar: ${c.t_end.toLocaleString()} generaties.` +
-                (r.problems.length ? "\n" + r.problems.join("\n") : ""), !r.clean);
-    }
+    const life = readOutputs(c, v);
+    const ok = JSON.stringify(life) === JSON.stringify(c.python);
+    $("result").innerHTML =
+      `Game of Life: <b>${fmt(life)}</b> &nbsp; Python: <b>${fmt(c.python)}</b> &nbsp; ` +
+      (ok ? `<span class="ok">✓ gelijk</span>` : `<span class="bad">✗ verschil</span>`);
+    setStatus(`Klaar: ${c.t_end.toLocaleString()} generaties. De uitgangsgliders hebben nu een label ` +
+              `in de viewer (rechtsonder, waar ze wegvliegen).`, !ok);
   }
   busy = false; $("compile").disabled = false; $("run").disabled = !compiled; $("stop").disabled = true;
 }

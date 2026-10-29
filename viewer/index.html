@@ -671,7 +671,11 @@ function frame(now) {
 // Small API for pages that embed the viewer in an iframe (editor/index.html).
 window.viewerAPI = {
   load: loadText,
-  reset() { setPlaying(false); state.stopAt = null; resetPattern(); },
+  reset() {
+    setPlaying(false); state.stopAt = null;
+    if (state.pattern) state.pattern.labels = state.pattern.labels.filter((l) => !l.extra);
+    resetPattern();
+  },
   /** Play at `gpf` generations per frame and pause at generation `stopAt`. */
   play(gpf, stopAt) {
     state.gpf = gpf; $("gpfVal").textContent = gpf;
@@ -680,6 +684,17 @@ window.viewerAPI = {
   },
   pause() { setPlaying(false); },
   gen: () => life.gen,
+  /** Is cell (x, y) alive in the current generation? */
+  alive(x, y) {
+    const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE), t = life.getTile(tx, ty);
+    return !!t && ((t.cur[y - ty * TILE] >>> (x - tx * TILE)) & 1) === 1;
+  },
+  /** Extra labels [{x, y, text}] until the next reset. */
+  addLabels(list) {
+    if (!state.pattern) return;
+    for (const l of list) state.pattern.labels.push({ ...l, extra: true });
+    state.dirty = true;
+  },
   playing: () => state.playing,
 };
 

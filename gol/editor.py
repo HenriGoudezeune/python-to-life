@@ -57,8 +57,14 @@ def api_compile(req: dict) -> dict:
     t = time.time()
     fname, prog = _program(req["src"], req.get("func"))
     vals = _values(prog, req.get("inputs", {}))
+    t_end = prog.layout.t_end
+    # where each output bit's glider is at t_end, so the browser can read the result itself
+    probes = [{"name": name, "bit": bit, "const": None if const is None else int(const),
+               "cells": None if traj is None else traj.cells_at(t_end).tolist()}
+              for name, bit, traj, const in prog.layout.outputs]
     return {"func": fname, "inputs": prog.inputs, "outputs": prog.outputs,
-            "values": vals, "stats": prog.stats(), "t_end": prog.layout.t_end,
+            "values": vals, "stats": prog.stats(), "t_end": t_end, "probes": probes,
+            "python": python_reference(req["src"], fname, prog, vals),
             "rle": prog.rle(**vals), "seconds": round(time.time() - t, 2)}
 
 
