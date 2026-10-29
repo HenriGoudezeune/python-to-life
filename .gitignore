@@ -3,3 +3,14 @@ __pycache__/
 scratch/
 out/
 .pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+# generated patterns / viewer pages (can be large)
+*.rle
+!examples/*.rle
+*.html
+!viewer/index.html

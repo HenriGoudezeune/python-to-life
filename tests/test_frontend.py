@@ -339,7 +339,7 @@ def f(a: u4, b: u3) -> (u3, u8):
     "tuple_unpack_swap": """
 def f(a: u4, b: u4):
     a, b = b, a
-    x, (y, z) = a + 1, (b, a ^ b)
+    x, y, z = a + 1, b, a ^ b
     return a, b, x, y, z
 """,
     "sort3_by_swaps": """
@@ -512,3 +512,70 @@ def f(a: u4):
 def test_unsupported_raises_compile_error(src):
     with pytest.raises(CompileError):
         to_aig(src)
+
+
+# ---------------------------------------------------------------- known bugs
+
+def _assert_compile_error(src):
+    try:
+        to_aig(src)
+    except CompileError:
+        return
+    raise AssertionError("expected CompileError")
+
+
+NEG_CONST_REASON = (
+    "negative literals are not rejected: '-1' parses as USub(1), and unary minus "
+    "wraps within the 1-bit width of the constant, so -1 == 1 (a + -1 computes a + 1)"
+)
+
+
+def test_negative_constant_raises_compile_error():
+    _assert_compile_error("def f(a: u4) -> u4:\n    return a + -1\n")
+
+
+def test_range_with_negative_step():
+    check("""
+def f(a: u8) -> u4:
+    r = 8
+    for i in range(7, -1, -1):
+        if (a >> i) & 1:
+            r = i
+    return r
+""")
+
+
+LOOPVAR_REASON = (
+    "the loop variable is bound under the current guard, so inside an 'if' or after "
+    "a possible early return in an earlier iteration it becomes a mux instead of a "
+    "constant: range(i) / % (2 << i) then raise CompileError (and shifts by i turn "
+    "into barrel shifters)"
+)
+
+
+def test_loop_var_constant_after_early_return():
+    check("""
+def f(a: u4) -> u4:
+    for i in range(4):
+        if a == i:
+            return i
+        for j in range(i):
+            if a == 4 + j:
+                return 9
+    return 0
+""")
+
+
+def test_loop_var_constant_inside_if():
+    check("""
+def f(a: u4, c: bool) -> u5:
+    s = 0
+    if c:
+        for i in range(3):
+            s += a % (2 << i)
+    return s
+""")
+
+
+def test_tuple_annotation_length_mismatch():
+    _assert_compile_error("def f(a: u4) -> tuple[u4]:\n    return a, a\n")

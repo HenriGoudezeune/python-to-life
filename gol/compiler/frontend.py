@@ -78,6 +78,8 @@ class Frontend:
         return v
 
     def const_int(self, node) -> int:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -self.const_int(node.operand)
         v = self.expr(node)
         if any(b not in (FALSE, TRUE) for b in v):
             self.err(node, "expected a compile-time constant")
@@ -109,6 +111,8 @@ class Frontend:
             elif isinstance(ann, ast.Subscript):   # tuple[u4, u1]
                 elts = ann.slice.elts if isinstance(ann.slice, ast.Tuple) else [ann.slice]
                 widths = [_width_of_annotation(e) for e in elts]
+            if len(widths) != len(vals):
+                raise CompileError(f"return annotation has {len(widths)} elements, function returns {len(vals)}")
             outs = []
             for i, (v, w) in enumerate(zip(vals, widths)):
                 outs.append((f"out{i}", A.extend(v, w) if w else v))
@@ -153,9 +157,16 @@ class Frontend:
             rng = range(*[self.const_int(a) for a in st.iter.args])
             if len(rng) > 4096:
                 self.err(st, "loop too long to unroll")
+            if not isinstance(st.target, ast.Name):
+                self.err(st, "loop variable must be a plain name")
+            var = st.target.id
+            old = self.env.get(var)
             for i in rng:
-                self.bind(st.target, A.const_vec(i), self.g.AND(guard, neg(self.returned)))
+                # the loop variable is a compile-time constant in every iteration
+                self.env[var] = A.const_vec(i)
                 self.block(st.body, guard)
+            if len(rng) and guard != TRUE and old is not None:
+                self.env[var] = A.mux_vec(self.g, guard, self.env[var], old)
         elif isinstance(st, ast.Return):
             val = self.value(st.value) if st.value is not None else None
             if val is None:
@@ -222,6 +233,8 @@ class Frontend:
             if isinstance(node.op, ast.Not):
                 return [neg(self.truthy(v))]
             if isinstance(node.op, ast.USub):
+                if isinstance(node.operand, ast.Constant):
+                    self.err(node, "negative constants are not supported (ints are unsigned)")
                 return A.sub(g, [FALSE], v, len(v))
             if isinstance(node.op, ast.UAdd):
                 return v
