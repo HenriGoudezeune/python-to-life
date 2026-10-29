@@ -1,0 +1,11 @@
+[project]
+name = "game-of-life"
+version = "0.1.0"
+description = "Game of Life simulator, viewer and a Python-to-Life compiler"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["slow: long Game of Life simulations (deselect with -m 'not slow')"]
