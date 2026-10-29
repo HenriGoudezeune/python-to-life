@@ -30,6 +30,20 @@ pip install numpy scipy pytest
 
 ## Gebruik
 
+### Editor (de makkelijkste manier)
+
+```bash
+python -m gol.editor
+```
+
+Dit opent http://127.0.0.1:8765 in je browser, met links een code-editor en rechts de viewer.
+1. Schrijf een functie, of kies een voorbeeld.
+2. Klik **Compileer** (`Ctrl+Enter`). Er verschijnen velden voor de invoer, en het patroon wordt in de viewer geladen.
+3. Klik **Simuleer en vergelijk** (`Ctrl+Shift+Enter`) om de uitkomst in Life naast die van Python te zien.
+4. Fouten verschijnen met hun regelnummer, dat ook in de kantlijn gemarkeerd wordt.
+
+De server luistert alleen op je eigen computer.
+
 ### Command line
 
 ```bash
@@ -144,7 +158,9 @@ python -m gol.view gun.rle          # schrijft gun.html (RLE ingebed) en opent h
 
 ```
 gol/compiler/   de compiler: frontend, aig, techmap, netlist, layout, drc, verify, CLI
+gol/editor.py   lokale webserver voor de editor
 gol/            simulator, RLE, patronen, glider-hulpmiddelen, reactiezoektocht
+editor/         editorpagina (HTML/JS)
 data/           gevonden reacties (reactions.json)
 examples/       voorbeeldprogramma's
 tests/          pytest-suite

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>python-to-life editor</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #15181d; --border: #2a2f37; --text: #d7dce2;
+    --muted: #8a93a0; --accent: #6cb6ff; --ok: #7ee787; --bad: #ff8a80;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  #app { display: flex; height: 100%; }
+  #side { width: 440px; flex: none; display: flex; flex-direction: column; gap: 8px;
+    background: var(--panel); border-right: 1px solid var(--border); padding: 10px 12px; }
+  #main { flex: 1; min-width: 0; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  h1 { font-size: 15px; margin: 0; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  button, input, select { font: inherit; color: var(--text); background: #1d2128;
+    border: 1px solid var(--border); border-radius: 4px; }
+  button { padding: 5px 11px; cursor: pointer; }
+  button.primary { border-color: var(--accent); }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  select { padding: 3px 5px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--muted); font-size: 12px; }
+  #code { flex: 1; min-height: 160px; display: flex; border: 1px solid var(--border);
+    border-radius: 4px; background: #0f1216; overflow: hidden; }
+  #gutter, #src { font: 13px/1.5 ui-monospace, Consolas, monospace; padding: 8px 6px; margin: 0; }
+  #gutter { color: #4b5361; text-align: right; user-select: none; overflow: hidden;
+    min-width: 36px; border-right: 1px solid var(--border); white-space: pre; }
+  #gutter .bad { color: var(--bad); }
+  #src { flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--text);
+    white-space: pre; overflow: auto; tab-size: 4; }
+  #inputs label { display: flex; align-items: center; gap: 4px; }
+  #inputs input { width: 72px; padding: 3px 5px; }
+  #status { min-height: 20px; white-space: pre-wrap; word-break: break-word; }
+  #status.bad { color: var(--bad); }
+  #result { font: 15px ui-monospace, Consolas, monospace; }
+  #result .ok { color: var(--ok); } #result .bad { color: var(--bad); }
+  #stats { white-space: pre-wrap; }
+  kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 3px; }
+  @media (max-width: 820px) {
+    #app { flex-direction: column; }
+    #side { width: auto; height: 55%; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <div class="row" style="justify-content: space-between">
+      <h1>python-to-life <span>editor</span></h1>
+      <label class="muted">voorbeeld <select id="examples"><option value="">…</option></select></label>
+    </div>
+    <div id="code"><div id="gutter">1</div><textarea id="src" spellcheck="false" autocomplete="off"></textarea></div>
+    <div class="row" id="inputs"></div>
+    <div class="row">
+      <button id="compile" class="primary" title="Ctrl+Enter">Compileer</button>
+      <button id="run" title="Ctrl+Shift+Enter" disabled>Simuleer en vergelijk</button>
+      <span class="muted"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
+    </div>
+    <div id="status" class="muted">Schrijf een functie en klik op Compileer.</div>
+    <div id="result"></div>
+    <div id="stats" class="muted"></div>
+  </div>
+  <div id="main"><iframe id="viewer" src="/viewer" title="Life viewer"></iframe></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const src = $("src"), gutter = $("gutter");
+let compiled = null;          // last successful compile response
+let busy = false;
+
+// ---- editor ---------------------------------------------------------------
+
+function updateGutter(badLine) {
+  const n = src.value.split("\n").length;
+  let s = "";
+  for (let i = 1; i <= n; i++) s += (i === badLine ? `<span class="bad">${i}</span>` : i) + "\n";
+  gutter.innerHTML = s;
+  gutter.scrollTop = src.scrollTop;
+}
+
+function insert(text) {
+  src.setRangeText(text, src.selectionStart, src.selectionEnd, "end");
+  onEdit();
+}
+
+src.addEventListener("keydown", (e) => {
+  if (e.key === "Tab" && !e.ctrlKey) {
+    e.preventDefault();
+    insert("    ");
+  } else if (e.key === "Enter" && !e.ctrlKey && !e.shiftKey) {
+    e.preventDefault();
+    const before = src.value.slice(0, src.selectionStart);
+    const line = before.slice(before.lastIndexOf("\n") + 1);
+    let indent = line.match(/^ */)[0];
+    if (/:\s*$/.test(line)) indent += "    ";
+    insert("\n" + indent);
+  }
+});
+src.addEventListener("scroll", () => { gutter.scrollTop = src.scrollTop; });
+src.addEventListener("input", onEdit);
+
+function onEdit() {
+  updateGutter();
+  try { localStorage.setItem("p2l.src", src.value); } catch (e) {}
+  if (compiled) { compiled = null; $("run").disabled = true;
+    setStatus("Code gewijzigd: compileer opnieuw.", false); }
+}
+
+$("compile").addEventListener("click", compileIt);
+$("run").addEventListener("click", runIt);
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.ctrlKey) {
+    e.preventDefault();
+    if (e.shiftKey) runIt(); else compileIt();
+  }
+});
+
+// ---- inputs ---------------------------------------------------------------
+
+function inputValues() {
+  const v = {};
+  for (const el of $("inputs").querySelectorAll("input")) v[el.name] = el.value;
+  return v;
+}
+
+function buildInputs(inputs, values) {
+  const box = $("inputs"), old = inputValues();
+  box.innerHTML = "";
+  for (const [name, w] of inputs) {
+    const lab = document.createElement("label");
+    lab.innerHTML = `<span>${name}</span><span class="muted">u${w}</span>`;
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.min = 0; inp.max = 2 ** w - 1; inp.name = name;
+    inp.value = name in old ? old[name] : values[name];
+    inp.addEventListener("change", compileIt);
+    lab.insertBefore(inp, lab.children[1]);
+    box.appendChild(lab);
+  }
+}
+
+// ---- server calls ---------------------------------------------------------
+
+function setStatus(text, bad) {
+  $("status").textContent = text;
+  $("status").className = bad ? "bad" : "muted";
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function fmt(v) { return Array.isArray(v) ? "(" + v.join(", ") + ")" : String(v); }
+
+async function compileIt() {
+  if (busy) return;
+  busy = true; $("compile").disabled = $("run").disabled = true;
+  setStatus("Compileren…", false); $("result").textContent = "";
+  updateGutter();
+  try {
+    const c = await post("/api/compile", { src: src.value, inputs: inputValues() });
+    compiled = c;
+    buildInputs(c.inputs, c.values);
+    const s = c.stats;
+    $("stats").textContent =
+      `${s.NOR} NOR, ${s.FAN} FAN · ${s.gliders} gliders, ${s.statics} stillevens\n` +
+      `${s.width} × ${s.height} cellen · uitgangen leesbaar op generatie ${c.t_end}\n` +
+      `uitgangen: ${c.outputs.map(([n, w]) => `${n} (u${w})`).join(", ")}`;
+    const tag = Object.entries(c.values).map(([k, v]) => k + v).join("_");
+    loadInViewer(c.rle, `${c.func}${tag ? "_" + tag : ""}`, c.t_end);
+    setStatus(`Gecompileerd in ${c.seconds}s. In de viewer: Go to gen ${c.t_end} en lees de uitgangsgliders af, ` +
+              `of klik Simuleer en vergelijk.`, false);
+  } catch (e) {
+    compiled = null;
+    $("stats").textContent = "";
+    setStatus(e.message, true);
+    const m = e.message.match(/^line (\d+)/);
+    if (m) updateGutter(+m[1]);
+  } finally {
+    busy = false; $("compile").disabled = false; $("run").disabled = !compiled;
+  }
+}
+
+async function runIt() {
+  if (busy || !compiled) return;
+  busy = true; $("compile").disabled = $("run").disabled = true;
+  setStatus(`Simuleren tot generatie ${compiled.t_end}… (grote patronen duren enkele seconden)`, false);
+  $("result").textContent = "";
+  try {
+    const r = await post("/api/run", { src: src.value, inputs: inputValues() });
+    $("result").innerHTML =
+      `Game of Life: <b>${fmt(r.life)}</b> &nbsp; Python: <b>${fmt(r.python)}</b> &nbsp; ` +
+      (r.ok ? `<span class="ok">✓ gelijk</span>` : `<span class="bad">✗ verschil</span>`);
+    setStatus(`${r.generations} generaties gesimuleerd in ${r.seconds}s.` +
+              (r.problems.length ? "\n" + r.problems.join("\n") : ""), !r.clean);
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    busy = false; $("compile").disabled = false; $("run").disabled = !compiled;
+  }
+}
+
+function loadInViewer(rle, name, tEnd) {
+  const w = $("viewer").contentWindow;
+  if (!w || typeof w.loadText !== "function") {
+    $("viewer").addEventListener("load", () => loadInViewer(rle, name, tEnd), { once: true });
+    return;
+  }
+  w.loadText(rle, name);
+  const g = w.document.getElementById("gotoN");
+  if (g) g.value = tEnd;
+}
+
+// ---- examples -------------------------------------------------------------
+
+let examples = {};
+$("examples").addEventListener("change", (e) => {
+  const k = e.target.value;
+  if (!k) return;
+  src.value = examples[k];
+  $("inputs").innerHTML = "";
+  onEdit();
+  e.target.value = "";
+  compileIt();
+});
+
+(async function init() {
+  try { examples = await (await fetch("/api/examples")).json(); } catch (e) {}
+  for (const k of Object.keys(examples)) {
+    const o = document.createElement("option"); o.value = o.textContent = k;
+    $("examples").appendChild(o);
+  }
+  let saved = null;
+  try { saved = localStorage.getItem("p2l.src"); } catch (e) {}
+  src.value = saved || examples.add4 ||
+    "def add4(a: u4, b: u4) -> u5:\n    return a + b\n";
+  updateGutter();
+})();
+</script>
+</body>
+</html>

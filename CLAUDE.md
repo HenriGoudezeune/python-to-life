@@ -13,6 +13,7 @@ Persoonlijk project van Henri. Python 3.11+, numpy, scipy, pytest. Code en comme
 | `gol/search.py` | Brute-force botsingszoektocht → `data/reactions.json` (`python -m gol.search`, ~1 min). |
 | `gol/reactions.py` | Reactiebibliotheek uit de catalogus: transformeren (8 symmetrieën), verschuiven, plaatsen. |
 | `gol/compiler/` | frontend (Python-AST → AIG), techmap (AIG → NOR/FAN-netlist), layout (netlist → gliders + stillevens), drc, verify, CLI. |
+| `gol/editor.py`, `editor/index.html` | Editor-app: lokale stdlib-HTTP-server (127.0.0.1) met `/api/compile` en `/api/run`. De viewer draait in een iframe en krijgt het patroon via `loadText`. |
 | `viewer/index.html` | Zelfstandige HTML/JS-viewer met tegel-simulator. `gol/view.py` bedt een RLE in. |
 | `tools/search_fanout.py` | Zoektocht die de tweede constante van de FAN-poort vond. |
 | `tests/` | pytest. `-m "not slow"` slaat de lange simulaties over. |
@@ -67,6 +68,7 @@ python -m pytest -q                      # alles (~1-3 min, opteller-tests zijn 
 python -m pytest -q -m "not slow"        # snel
 python -m gol.compiler examples/add4.py --inputs a=5,b=9 --run --drc --html
 python -m gol.view out/add4_a5_b9.rle
+python -m gol.editor                     # editor-app in de browser
 python -m gol.search                     # catalogus opnieuw opbouwen
 ```
 
