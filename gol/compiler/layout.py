@@ -36,8 +36,8 @@ E = 48         # offset of the delay loop's upward leg from its column
 EAT = 8        # eater sits this many cells (in x) past the crossing
 W = 120        # spacing between gate columns
 WF = 88        # FAN: offset of the second column
-D = 120        # theta spacing between gate slots
-RISE_MIN = 10  # minimal length (cells) of the upward leg of a delay loop
+D = 136        # theta spacing between gate slots
+RISE_MIN = 13  # minimal length (cells) of the upward leg of a delay loop
 
 
 def _kill_table():
@@ -66,6 +66,8 @@ assert (_KB_ROW.lane + _KB_COL.lane) % 2 == 0
 # far upstream. If the input is absent it passes and carries NOT input.
 FAN_G2 = G.Traj("SE", 24, -3)
 BOAT_SE_SW = R.reflectors("SE", "SW")[0]
+BOAT_SW_SE = R.reflectors("SW", "SE")[0]
+G2_FEED = 24   # FAN_G2 is fed in as a column that a boat turns SE this far left of c_k
 _b = R.place_single(BOAT_SE_SW, FAN_G2, 0)
 BOAT_SE_SW_DTH = R.theta(_b.outputs[0]) - R.theta(FAN_G2)   # theta gain of that turn
 
@@ -98,6 +100,7 @@ class Row:
     consumer: object          # ("gate", k) or ("out", i)
     cond: object = None       # Lit for primary rows, None otherwise
     start_u: float = 0.0
+    seg: int = -1
 
 
 @dataclass
@@ -108,6 +111,9 @@ class Layout:
     labels: list = field(default_factory=list)       # [(x, y, text)]
     t_end: int = 0
     netlist: Netlist | None = None
+    segs: list = field(default_factory=list)          # [(traj, x_from, x_to, label)] glider path pieces
+    ok_pairs: set = field(default_factory=set)        # {(seg, seg)} meant to react
+    ok_static: set = field(default_factory=set)       # {(seg, static index)} meant to react
 
     def cells(self, values: dict) -> np.ndarray:
         parts = [c for c, _ in self.statics]
@@ -228,10 +234,25 @@ class Builder:
                 return target, pc % 2
         raise RuntimeError("no kill timing fits")
 
+    def _seg(self, traj, xa, xb, label) -> int:
+        self.L.segs.append((traj, float(xa), float(xb), label))
+        return len(self.L.segs) - 1
+
+    def _end_seg(self, i, xb):
+        t, xa, _, lab = self.L.segs[i]
+        self.L.segs[i] = (t, xa, float(xb), lab)
+
+    def _static(self, cells, label, seg=None) -> int:
+        self.L.statics.append((cells, label))
+        i = len(self.L.statics) - 1
+        for sg in ([seg] if isinstance(seg, int) else seg or []):
+            self.L.ok_static.add((sg, i))
+        return i
+
     def _lowest_lane(self):
         return min((r.lane for r in self.rows.values()), default=0)
 
-    def _loop(self, col: G.Traj, lane: int, theta: int, label: str):
+    def _loop(self, col: G.Traj, col_seg: int, lane: int, theta: int, label: str):
         """Delay loop from constant `col` (SW) to a new row with given lane and theta."""
         best = None
         for names, (r1, r2, r3), rho in LOOPS:
@@ -270,18 +291,26 @@ class Builder:
                 best = cand
         if best is None:
             raise RuntimeError(f"delay loop impossible for {label} (theta {theta} vs {R.theta(col)})")
-        _, parts, T = best
-        for p, nm in zip(parts, ("loop1", "loop2", "loop3")):
-            self.L.statics.append((p.statics, f"{label}:{nm}"))
-        return T, -parts[1].outputs[0].lane
+        _, (a, b, cc), T = best
+        xs = [p.statics[:, 0].mean() for p in (a, b, cc)]
+        self._end_seg(col_seg, xs[0])
+        s1 = self._seg(a.outputs[0], xs[0], xs[1], f"{label}:loop-right")
+        s2 = self._seg(b.outputs[0], xs[1], xs[2], f"{label}:loop-up")
+        s3 = self._seg(T, xs[2], xs[2], f"{label}:row")
+        self.L.ok_pairs.update({(col_seg, s1), (s1, s2), (s2, s3)})
+        self._static(a.statics, f"{label}:loop1", [col_seg, s1])
+        self._static(b.statics, f"{label}:loop2", [s1, s2])
+        self._static(cc.statics, f"{label}:loop3", [s2, s3])
+        return T, -b.outputs[0].lane, s3
 
-    def _eater(self, row: G.Traj, col_lane: int, label: str):
+    def _eater(self, row: Row, col_lane: int, label: str):
         ea = R.eaters("SE")[0]
         x_cross = (row.lane + col_lane) / 2
-        r0 = R.place_single(ea, row, 0)
+        r0 = R.place_single(ea, row.traj, 0)
         dx = int(round(x_cross + EAT - r0.statics[:, 0].mean()))
-        r1 = R.place_single(ea, row, dx)
-        self.L.statics.append((r1.statics, label))
+        r1 = R.place_single(ea, row.traj, dx)
+        self._end_seg(row.seg, r1.statics[:, 0].mean())
+        self._static(r1.statics, label, row.seg)
 
     # ---------- pass 2: geometry ----------
     def build(self) -> Layout:
@@ -319,7 +348,8 @@ class Builder:
             if (lane - par) % 2:
                 lane -= 1
             traj = _se(lane, th)
-            self.rows[key] = Row(traj, lane, key, lit)
+            sg = self._seg(traj, traj.pos(0)[0], traj.pos(0)[0], f"in {lit}")
+            self.rows[key] = Row(traj, lane, key, lit, seg=sg)
             L.gliders.append((traj, lit))
             p = traj.pos(0)
             L.labels.append((int(p[0]), int(p[1]) - 3, f"in {lit}"))
@@ -329,6 +359,7 @@ class Builder:
             s = self.sched[k]
             col = _sw(s["c"], s["th"])
             L.gliders.append((col, None))
+            col_seg = self._seg(col, col.pos(0)[0], col.pos(0)[0], f"{g.kind}#{k}:C")
             low = self._lowest_lane()
             ins = [self.rows.pop(("gate", k, i)) for i in range(len(g.ins))]
             # rows are crossed from the top (highest lane) down
@@ -341,16 +372,35 @@ class Builder:
                 for j, r in enumerate(ins):
                     rx = R.place_pair(KILL[(R.theta(col) - R.theta(r.traj), (r.lane + s["c"]) % 2)], r.traj, col)
                     assert rx is not None, "kill timing mismatch"
+                    xc = (r.lane + s["c"]) / 2
+                    self._end_seg(r.seg, xc)
+                    L.ok_pairs.add((r.seg, col_seg))
                     if j > 0:
-                        self._eater(r.traj, s["c"], f"NOR#{k}:eater")
-                outs = [(col, g.outs[0])]
+                        self._eater(r, s["c"], f"NOR#{k}:eater")
+                outs = [(col, g.outs[0], col_seg)]
             else:
                 r = ins[0]
                 kb = R.place_pair(KB, r.traj, col)
                 assert kb is not None, "kickback timing mismatch"
+                xc = (r.lane + s["c"]) / 2
+                self._end_seg(r.seg, xc)
+                L.ok_pairs.add((r.seg, col_seg))
+                kick = kb.outputs[0]
                 # second constant, shifted like the kickback, then a boat turns it down
                 g2 = FAN_G2.shifted(*_match_shift(KB, kb))
-                L.gliders.append((g2, None))
+                # feed g2 from a column just left of c_k (a glider coming from far
+                # up-left along its lane would cross older delay loops)
+                feed = _place_by_output(BOAT_SW_SE, g2, s["c"] - G2_FEED)
+                L.gliders.append((feed.inputs[0], None))
+                fx = feed.statics[:, 0].mean()
+                fseg = self._seg(feed.inputs[0], feed.inputs[0].pos(0)[0], fx, f"FAN#{k}:feed")
+                g2seg = self._seg(g2, fx, fx, f"FAN#{k}:G2")
+                self._static(feed.statics, f"FAN#{k}:feed", [fseg, g2seg])
+                L.ok_pairs.add((fseg, g2seg))
+                # kickback glider runs from the collision to where G2 kills it
+                kx = (kick.lane * -1 + g2.lane) / 2       # NE lane = -x-y, SE lane = x-y
+                kseg = self._seg(kick, xc, kx, f"FAN#{k}:kick")
+                L.ok_pairs.update({(kseg, g2seg), (kseg, col_seg), (kseg, r.seg)})
                 b0 = R.place_single(BOAT_SE_SW, g2, 0)
                 b1 = R.place_single(BOAT_SE_SW, g2, 1)
                 step = b1.outputs[0].lane - b0.outputs[0].lane
@@ -358,9 +408,13 @@ class Builder:
                 boat = R.place_single(BOAT_SE_SW, g2, dx)
                 col2 = boat.outputs[0]
                 assert col2.lane == s["c2"] and R.theta(col2) == s["th2"], (col2, s)
-                L.statics.append((boat.statics, f"FAN#{k}:turn"))
-                outs = [(col, g.outs[0]), (col2, g.outs[1])]
-            for cl, w in outs:
+                bx = boat.statics[:, 0].mean()
+                self._end_seg(g2seg, bx)
+                c2seg = self._seg(col2, bx, bx, f"FAN#{k}:C2")
+                self._static(boat.statics, f"FAN#{k}:turn", [g2seg, c2seg])
+                L.ok_pairs.add((g2seg, c2seg))
+                outs = [(col, g.outs[0], col_seg), (col2, g.outs[1], c2seg)]
+            for cl, w, cseg in outs:
                 key = consumer[w.id]
                 if key[0] == "gate":
                     th, par = self._input_target(key[1], key[2], w)
@@ -371,8 +425,8 @@ class Builder:
                 lane = min(low, self._lowest_lane()) - SR
                 if (lane - par) % 2:
                     lane -= 1
-                T, u_up = self._loop(cl, lane, th, f"{g.kind}#{k}")
-                self.rows[key] = Row(T, lane, key, None, u_up)
+                T, u_up, rseg = self._loop(cl, cseg, lane, th, f"{g.kind}#{k}")
+                self.rows[key] = Row(T, lane, key, None, u_up, rseg)
         # outputs
         c_read = self.c_end + W
         t_end = 0
@@ -382,6 +436,7 @@ class Builder:
                 continue
             row = self.rows.pop(("out", i))
             x = (row.lane + c_read) / 2
+            self._end_seg(row.seg, x)
             t = int(np.ceil(row.traj.time_at(x)))
             t_end = max(t_end, t)
             L.outputs.append((name, bit, row.traj, None))
@@ -391,6 +446,25 @@ class Builder:
                 px, py = traj.pos(L.t_end)
                 L.labels.append((int(px) + 4, int(py), f"out {name}[{bit}]"))
         return L
+
+
+def _place_by_output(r: R.Reaction, outgoing: G.Traj, u: float) -> R.Reaction:
+    """Translate single-input reaction r so that its output equals `outgoing`,
+    with the static part near x + y = u."""
+    o = r.outputs[0]
+    sx, sy = P.DIRS[o.dir]
+    assert sx * sy == 1, "u varies along the path only for SE/NW outputs"
+
+    def dy_of(dx):
+        return sx * (o.lane + sy * dx - outgoing.lane)
+
+    base = r.statics[:, 0].mean() + r.statics[:, 1].mean() + dy_of(0)
+    dx = int(round((u - base) / 2))       # u grows by 2 per step along the lane
+    dy = dy_of(dx)
+    dt = outgoing.tref - o.tref + 4 * sx * dx
+    out = r.shifted(dx, dy, dt)
+    assert out.outputs[0] == outgoing
+    return out
 
 
 def _match_shift(canon: R.Reaction, inst: R.Reaction):
