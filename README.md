@@ -39,7 +39,7 @@ python -m gol.editor
 Dit opent http://127.0.0.1:8765 in je browser, met links een code-editor en rechts de viewer.
 1. Schrijf een functie, of kies een voorbeeld.
 2. Klik **Compileer** (`Ctrl+Enter`). Er verschijnen velden voor de invoer, en het patroon wordt in de viewer geladen.
-3. Klik **Simuleer en vergelijk** (`Ctrl+Shift+Enter`) om de uitkomst in Life naast die van Python te zien.
+3. Klik **▶ Speel af** (`Ctrl+Shift+Enter`). De viewer speelt het patroon live af, in 10, 30 of 90 seconden, en stopt vanzelf op de generatie waarop de uitgangen af te lezen zijn. Ondertussen controleert de server het resultaat. Op het einde zie je de uitkomst in Life naast die van Python. Zoom tijdens het afspelen in op een poort (`NOR#…`, `FAN#…`) om de botsingen te zien.
 4. Fouten verschijnen met hun regelnummer, dat ook in de kantlijn gemarkeerd wordt.
 
 De server luistert alleen op je eigen computer.

@@ -349,6 +349,7 @@ const state = {
   dirty: true,
   hover: null,
   gotoToken: 0,
+  stopAt: null,           // pause automatically at this generation (set by the editor)
 };
 
 const BG = 0xff100d0b;    // ABGR (little endian) for #0b0d10
@@ -580,7 +581,7 @@ function render() {
       if (!w) continue;
       const wy = by + r;
       let py0 = Math.floor((wy - vy) * s), py1 = Math.floor((wy + 1 - vy) * s) - gap;
-      if (py1 <= py0) py1 = py0 + 1;   // zoomed out: several cells share one pixel row
+      if (py1 <= py0) py1 = py0 + 2;   // zoomed out: several cells share a 2-pixel dot
       if (py1 <= 0 || py0 >= H) continue;
       if (py0 < 0) py0 = 0;
       if (py1 > H) py1 = H;
@@ -589,7 +590,7 @@ function render() {
         w &= w - 1;
         const wx = bx + b;
         let px0 = Math.floor((wx - vx) * s), px1 = Math.floor((wx + 1 - vx) * s) - gap;
-        if (px1 <= px0) px1 = px0 + 1;
+        if (px1 <= px0) px1 = px0 + 2;
         if (px1 <= 0 || px0 >= W) continue;
         if (px0 < 0) px0 = 0;
         if (px1 > W) px1 = W;
@@ -654,13 +655,33 @@ function frame(now) {
   if (state.playing && now - state.lastTick >= 1000 / state.fps - 1) {
     state.lastTick = now;
     const until = performance.now() + 100;   // never freeze the page for long
-    for (let i = 0; i < state.gpf && performance.now() < until; i++) life.step();
+    const stop = state.stopAt;
+    for (let i = 0; i < state.gpf && performance.now() < until; i++) {
+      if (stop != null && life.gen >= stop) break;
+      life.step();
+    }
+    if (stop != null && life.gen >= stop) { state.stopAt = null; setPlaying(false); }
     updateStats();
     state.dirty = true;
   }
   if (state.dirty) { state.dirty = false; render(); }
   requestAnimationFrame(frame);
 }
+
+// Small API for pages that embed the viewer in an iframe (editor/index.html).
+window.viewerAPI = {
+  load: loadText,
+  reset() { setPlaying(false); state.stopAt = null; resetPattern(); },
+  /** Play at `gpf` generations per frame and pause at generation `stopAt`. */
+  play(gpf, stopAt) {
+    state.gpf = gpf; $("gpfVal").textContent = gpf;
+    state.stopAt = stopAt == null ? null : stopAt;
+    setPlaying(true);
+  },
+  pause() { setPlaying(false); },
+  gen: () => life.gen,
+  playing: () => state.playing,
+};
 
 resize();
 if (typeof window.EMBEDDED_RLE === "string") {
