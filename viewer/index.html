@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game of Life viewer</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #15181d; --border: #2a2f37; --text: #d7dce2;
+    --muted: #8a93a0; --accent: #6cb6ff; --cell: #e8f0f8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  #app { display: flex; height: 100%; }
+  #side { width: 290px; flex: none; background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 10px 12px; }
+  #main { flex: 1; position: relative; min-width: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  h1 { font-size: 15px; margin: 0 0 8px; word-break: break-word; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+    margin: 14px 0 6px; }
+  button, input, textarea { font: inherit; color: var(--text); background: #1d2128;
+    border: 1px solid var(--border); border-radius: 4px; }
+  button { padding: 4px 9px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+  .row label { color: var(--muted); }
+  input[type=number] { width: 100px; padding: 3px 5px; }
+  input[type=range] { flex: 1; min-width: 80px; }
+  textarea { width: 100%; height: 90px; padding: 5px; font: 11px/1.3 ui-monospace, Consolas, monospace;
+    resize: vertical; }
+  .stat { font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--accent); font-weight: 600; }
+  #info { font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word;
+    max-height: 260px; overflow-y: auto; }
+  #err { color: #ff8a80; font-size: 12px; white-space: pre-wrap; }
+  #hud { position: absolute; left: 8px; bottom: 6px; pointer-events: none; color: var(--muted);
+    font: 12px ui-monospace, Consolas, monospace; background: rgba(11,13,16,.7); padding: 2px 6px;
+    border-radius: 3px; }
+  #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(108,182,255,.12); border: 2px dashed var(--accent); font-size: 18px;
+    pointer-events: none; }
+  #drop.on { display: flex; }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <h1 id="title">Game of Life viewer</h1>
+
+    <h2>Load RLE</h2>
+    <div class="row"><input type="file" id="file" accept=".rle,.txt,text/plain"></div>
+    <div class="muted">…or drop a file on the canvas, or paste below:</div>
+    <textarea id="paste" spellcheck="false" placeholder="#C ...&#10;x = 3, y = 3, rule = B3/S23&#10;bo$2bo$3o!"></textarea>
+    <div class="row"><button id="loadPaste">Load pasted</button></div>
+    <div id="err"></div>
+
+    <h2>Simulation</h2>
+    <div class="row">
+      <button id="play" title="Space">Play</button>
+      <button id="step" title="N">Step</button>
+      <button id="reset" title="R">Reset</button>
+    </div>
+    <div class="row stat">Gen <b id="gen">0</b>&nbsp;&nbsp; Pop <b id="pop">0</b></div>
+    <div class="row"><label for="gpf">Gens/frame</label>
+      <input type="range" id="gpf" min="0" max="10" value="0"><span id="gpfVal" class="stat">1</span></div>
+    <div class="row"><label for="fps">FPS</label>
+      <input type="range" id="fps" min="1" max="60" value="30"><span id="fpsVal" class="stat">30</span></div>
+    <div class="row">
+      <input type="number" id="gotoN" min="0" value="1000">
+      <button id="goto">Go to gen</button>
+    </div>
+    <div id="gotoStatus" class="muted"></div>
+
+    <h2>View</h2>
+    <div class="row">
+      <button id="fit" title="F">Fit to pattern</button>
+      <label><input type="checkbox" id="showLabels" checked> Labels</label>
+      <label><input type="checkbox" id="showGrid" checked> Grid</label>
+    </div>
+    <div class="muted">Wheel: zoom · drag: pan · Space: play · N: step · F: fit · R: reset</div>
+
+    <h2>Info</h2>
+    <div id="info" class="muted">No pattern loaded.</div>
+  </div>
+  <div id="main">
+    <canvas id="cv"></canvas>
+    <div id="hud"></div>
+    <div id="drop">Drop RLE file</div>
+  </div>
+</div>
+
+<!-- EMBED -->
+
+<script>
+"use strict";
+
+// ==== SIM START ====
+// Everything between the SIM markers is plain JS with no DOM access, so
+// viewer/test_sim.js can extract and test it under node.
+
+/**
+ * Parse RLE text (B3/S23). Returns {cells: [[x,y],...], labels, comments, name, rule, warnings}.
+ * `#P x y` / `#R x y` set the absolute top-left coordinate (y points down).
+ * `#C LABEL x y text` lines become labels at absolute cell (x, y).
+ */
+function parseRLE(text) {
+  const out = { cells: [], labels: [], comments: [], name: "", rule: "B3/S23", warnings: [] };
+  let ox = 0, oy = 0, headerSeen = false;
+  const body = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const s = raw.trim();
+    if (!s) continue;
+    if (s[0] === "#") {
+      const tag = s.slice(0, 2);
+      if (tag === "#P" || tag === "#R") {
+        const v = s.slice(2).trim().split(/\s+/).map(Number);
+        if (v.length >= 2 && Number.isInteger(v[0]) && Number.isInteger(v[1])) { ox = v[0]; oy = v[1]; }
+        continue;
+      }
+      const m = /^#C\s+LABEL\s+(-?\d+)\s+(-?\d+)\s*(.*)$/i.exec(s);
+      if (m) { out.labels.push({ x: +m[1], y: +m[2], text: m[3] }); continue; }
+      if (tag === "#N") out.name = s.slice(2).trim();
+      out.comments.push(s);
+      continue;
+    }
+    if (!headerSeen && /^x\s*=/.test(s)) {
+      headerSeen = true;
+      const rm = /rule\s*=\s*([^,\s]+)/i.exec(s);
+      if (rm) {
+        out.rule = rm[1].toUpperCase();
+        if (out.rule !== "B3/S23" && out.rule !== "23/3")
+          out.warnings.push(`Rule ${rm[1]} is not supported; simulating B3/S23 anyway.`);
+      }
+      continue;
+    }
+    body.push(s);
+  }
+  let x = 0, y = 0;
+  for (const m of body.join("").matchAll(/(\d*)([bo$!]|[A-Za-z])/g)) {
+    const n = m[1] ? parseInt(m[1], 10) : 1, t = m[2];
+    if (t === "!") break;
+    if (t === "$") { y += n; x = 0; }
+    else if (t === "b") x += n;
+    else { for (let i = 0; i < n; i++) out.cells.push([x + i + ox, y + oy]); x += n; }
+  }
+  return out;
+}
+
+/**
+ * Sparse tiled Life universe (B3/S23).
+ *
+ * The plane is cut into 32x32 tiles stored in a Map; a tile holds one Int32 per
+ * row (bit i = cell x = 32*tx + i). Each generation only re-evaluates tiles that
+ * changed in the previous generation plus their 8 neighbours: a tile whose 3x3
+ * tile neighbourhood did not change cannot change either. Empty neighbour tiles
+ * are only created when the changed tile has (or just had) live cells on the
+ * facing edge, and tiles that are empty and stable are dropped again. Still
+ * lifes therefore cost nothing and a glider costs a handful of tiles.
+ */
+const TILE = 32;
+const ZERO_ROWS = new Int32Array(TILE);
+
+class Life {
+  constructor() { this.clear(); }
+
+  clear() {
+    this.tiles = new Map();
+    this.changed = [];   // tiles that changed in the last generation
+    this.gen = 0;
+    this.pop = 0;
+    this.stamp = 0;
+  }
+
+  // Keys must stay small integers (V8 Smis) for fast Map lookups, so tile
+  // coordinates are taken mod 2^15: the universe is a torus of 2^20 cells per
+  // axis (a glider needs ~4 million generations to notice).
+  static key(tx, ty) { return ((tx & 0x7fff) << 15) | (ty & 0x7fff); }
+
+  getTile(tx, ty) { return this.tiles.get(Life.key(tx, ty)); }
+
+  makeTile(tx, ty) {
+    const t = { tx, ty, cur: new Int32Array(TILE), nxt: new Int32Array(TILE), pop: 0, stamp: 0 };
+    this.tiles.set(Life.key(tx, ty), t);
+    return t;
+  }
+
+  /** Replace the universe with the given [[x,y],...] cells. */
+  load(cells) {
+    this.clear();
+    for (const [x, y] of cells) {
+      const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+      const t = this.getTile(tx, ty) || this.makeTile(tx, ty);
+      const row = y - ty * TILE, bit = 1 << (x - tx * TILE);
+      if (!(t.cur[row] & bit)) { t.cur[row] |= bit; t.pop++; this.pop++; }
+    }
+    this.changed = [...this.tiles.values()];   // everything is "new"
+  }
+
+  /** All live cells as [[x,y],...]. */
+  cells() {
+    const out = [];
+    for (const t of this.tiles.values()) {
+      if (!t.pop) continue;
+      for (let r = 0; r < TILE; r++) {
+        let w = t.cur[r];
+        while (w) {
+          const b = 31 - Math.clz32(w & -w);
+          out.push([t.tx * TILE + b, t.ty * TILE + r]);
+          w &= w - 1;
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Bounding box {x0,y0,x1,y1} (inclusive) of live cells, or null. */
+  bounds() {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const t of this.tiles.values()) {
+      if (!t.pop) continue;
+      let or = 0, r0 = -1, r1 = -1;
+      for (let r = 0; r < TILE; r++) if (t.cur[r]) { or |= t.cur[r]; if (r0 < 0) r0 = r; r1 = r; }
+      const bx = t.tx * TILE, by = t.ty * TILE;
+      x0 = Math.min(x0, bx + 31 - Math.clz32(or & -or));
+      x1 = Math.max(x1, bx + 31 - Math.clz32(or));
+      y0 = Math.min(y0, by + r0);
+      y1 = Math.max(y1, by + r1);
+    }
+    return x0 === Infinity ? null : { x0, y0, x1, y1 };
+  }
+
+  /** Does tile t have live cells (now or last generation) on the edge facing (dx, dy)? */
+  static edgeLive(t, dx, dy) {
+    const mask = dx < 0 ? 1 : dx > 0 ? (1 << 31) : -1;
+    const r0 = dy < 0 ? 0 : dy > 0 ? TILE - 1 : 0;
+    const r1 = dy < 0 ? 0 : dy > 0 ? TILE - 1 : TILE - 1;
+    // t.nxt holds the previous generation right after the swap in step();
+    // a cell that just died can trigger a birth next door (4 -> 3 neighbours).
+    for (let r = r0; r <= r1; r++) if ((t.cur[r] | t.nxt[r]) & mask) return true;
+    return false;
+  }
+
+  /** Advance one generation. */
+  step() {
+    const stamp = ++this.stamp;
+    const todo = [];
+    for (const t of this.changed) {
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        let n = this.getTile(t.tx + dx, t.ty + dy);
+        if (!n) {
+          if (!Life.edgeLive(t, dx, dy)) continue;
+          n = this.makeTile(t.tx + dx, t.ty + dy);
+        }
+        if (n.stamp !== stamp) { n.stamp = stamp; todo.push(n); }
+      }
+    }
+    // Compute every next state from the current states before committing any.
+    for (const t of todo) this.computeNext(t);
+    const changed = [];
+    for (const t of todo) {
+      const a = t.cur, b = t.nxt;
+      let diff = false;
+      for (let r = 0; r < TILE; r++) if (a[r] !== b[r]) { diff = true; break; }
+      if (diff) {
+        t.cur = b; t.nxt = a;          // nxt now holds the previous generation
+        let p = 0;
+        for (let r = 0; r < TILE; r++) p += popcount32(b[r]);
+        this.pop += p - t.pop;
+        t.pop = p;
+        changed.push(t);
+      } else if (t.pop === 0) {
+        this.tiles.delete(Life.key(t.tx, t.ty));   // empty and stable
+      }
+    }
+    // Tiles that did not change keep nxt == cur, so edgeLive() sees no stale data
+    // for them; for changed tiles nxt is exactly the previous generation.
+    this.changed = changed;
+    this.gen++;
+  }
+
+  run(n) { for (let i = 0; i < n; i++) this.step(); }
+
+  rowsOf(tx, ty) { const n = this.tiles.get(Life.key(tx, ty)); return n ? n.cur : ZERO_ROWS; }
+
+  /** Next generation of tile t into t.nxt, using a bit-sliced neighbour count. */
+  computeNext(t) {
+    const tx = t.tx, ty = t.ty, C = t.cur;
+    const N = this.rowsOf(tx, ty - 1), S = this.rowsOf(tx, ty + 1);
+    const W = this.rowsOf(tx - 1, ty), E = this.rowsOf(tx + 1, ty);
+    const NW = this.rowsOf(tx - 1, ty - 1), NE = this.rowsOf(tx + 1, ty - 1);
+    const SW = this.rowsOf(tx - 1, ty + 1), SE = this.rowsOf(tx + 1, ty + 1);
+    const T1 = SCR_T1, T2 = SCR_T2, P1 = SCR_P1, P2 = SCR_P2;
+    // Rows k = 0..33 correspond to tile rows -1..32. For each row compute the
+    // horizontal 3-sum (l+c+r = T1 + 2*T2) and 2-sum (l+r = P1 + 2*P2), where
+    // l / r hold the left / right neighbour of each bit including the bit
+    // borrowed from the west / east tile.
+    for (let k = 0; k < TILE + 2; k++) {
+      let c, wb, eb;
+      if (k === 0) { c = N[TILE - 1]; wb = NW[TILE - 1] >>> 31; eb = NE[TILE - 1] & 1; }
+      else if (k === TILE + 1) { c = S[0]; wb = SW[0] >>> 31; eb = SE[0] & 1; }
+      else { c = C[k - 1]; wb = W[k - 1] >>> 31; eb = E[k - 1] & 1; }
+      const l = (c << 1) | wb, r = (c >>> 1) | (eb << 31);
+      const lc = l ^ c;
+      T1[k] = lc ^ r; T2[k] = (l & c) | (r & lc);
+      P1[k] = l ^ r;  P2[k] = l & r;
+    }
+    const out = t.nxt;
+    for (let y = 0; y < TILE; y++) {
+      const u1 = T1[y], u2 = T2[y], d1 = T1[y + 2], d2 = T2[y + 2], p1 = P1[y + 1], p2 = P2[y + 1];
+      // neighbours = a0 + 2*(a1 + u2 + d2 + p2); alive next iff the bracket is exactly 1
+      // (2 or 3 neighbours) and (a0 set, i.e. 3, or the cell is alive).
+      const a0 = u1 ^ d1 ^ p1;
+      const a1 = (u1 & d1) | (p1 & (u1 ^ d1));
+      const s = u2 ^ d2, cc = u2 & d2, s2 = p2 ^ a1, c2 = p2 & a1;
+      out[y] = (s ^ s2) & ~(cc | c2) & (a0 | C[y]);
+    }
+  }
+}
+
+const SCR_T1 = new Int32Array(TILE + 2), SCR_T2 = new Int32Array(TILE + 2);
+const SCR_P1 = new Int32Array(TILE + 2), SCR_P2 = new Int32Array(TILE + 2);
+
+function popcount32(v) {
+  v = v - ((v >>> 1) & 0x55555555);
+  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+  return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+// ==== SIM END ====
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const canvas = $("cv"), ctx = canvas.getContext("2d");
+const life = new Life();
+
+const state = {
+  pattern: null,          // last parsed pattern (for reset / labels / info)
+  playing: false,
+  gpf: 1, fps: 30,
+  lastTick: 0,
+  // view: world coordinate at the canvas top-left, and device pixels per cell
+  vx: -10, vy: -10, scale: 8,
+  dirty: true,
+  hover: null,
+  gotoToken: 0,
+};
+
+const BG = 0xff100d0b;    // ABGR (little endian) for #0b0d10
+const FG = 0xfff8f0e8;    // #e8f0f8
+const LABEL_COLOR = "#ffcf5c";
+
+// ---- loading --------------------------------------------------------------
+
+function loadText(text, name) {
+  let p;
+  try { p = parseRLE(text); }
+  catch (e) { $("err").textContent = "Parse error: " + e.message; return; }
+  $("err").textContent = p.warnings.join("\n");
+  p.title = name || p.name || "Untitled pattern";
+  state.pattern = p;
+  document.title = p.title + " – Life viewer";
+  $("title").textContent = p.title;
+  const info = [];
+  info.push(`${p.cells.length} cells, ${p.labels.length} labels, rule ${p.rule}`);
+  for (const c of p.comments) info.push(c.replace(/^#[CcN]\s?/, ""));
+  $("info").textContent = info.join("\n");
+  resetPattern();
+  fit();
+}
+
+function resetPattern() {
+  state.gotoToken++;
+  $("gotoStatus").textContent = "";
+  life.load(state.pattern ? state.pattern.cells : []);
+  updateStats();
+  state.dirty = true;
+}
+
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) f.text().then((t) => loadText(t, f.name.replace(/\.[^.]*$/, "")));
+});
+$("loadPaste").addEventListener("click", () => loadText($("paste").value, ""));
+
+const main = $("main");
+main.addEventListener("dragover", (e) => { e.preventDefault(); $("drop").classList.add("on"); });
+main.addEventListener("dragleave", () => $("drop").classList.remove("on"));
+main.addEventListener("drop", (e) => {
+  e.preventDefault();
+  $("drop").classList.remove("on");
+  const f = e.dataTransfer.files[0];
+  if (f) f.text().then((t) => loadText(t, f.name.replace(/\.[^.]*$/, "")));
+  else {
+    const t = e.dataTransfer.getData("text");
+    if (t) loadText(t, "");
+  }
+});
+
+// ---- simulation controls --------------------------------------------------
+
+function updateStats() {
+  $("gen").textContent = life.gen.toLocaleString();
+  $("pop").textContent = life.pop.toLocaleString();
+}
+
+function setPlaying(on) {
+  state.playing = on;
+  $("play").textContent = on ? "Pause" : "Play";
+  if (on) state.gotoToken++;
+}
+
+$("play").addEventListener("click", () => setPlaying(!state.playing));
+$("step").addEventListener("click", () => { setPlaying(false); life.step(); updateStats(); state.dirty = true; });
+$("reset").addEventListener("click", () => { setPlaying(false); resetPattern(); });
+
+$("gpf").addEventListener("input", (e) => {
+  state.gpf = 2 ** +e.target.value;
+  $("gpfVal").textContent = state.gpf;
+});
+$("fps").addEventListener("input", (e) => {
+  state.fps = +e.target.value;
+  $("fpsVal").textContent = state.fps;
+});
+
+/** Fast-forward to generation n without rendering, yielding to the UI every ~50 ms. */
+function gotoGen(n) {
+  setPlaying(false);
+  if (!(n >= 0)) return;
+  if (n < life.gen) resetPattern();
+  const token = ++state.gotoToken;
+  const status = $("gotoStatus");
+  const t0 = performance.now();
+  const chunk = () => {
+    if (token !== state.gotoToken) return;            // cancelled
+    const until = performance.now() + 50;
+    while (life.gen < n && performance.now() < until) {
+      for (let i = 0; i < 16 && life.gen < n; i++) life.step();
+    }
+    updateStats();
+    if (life.gen < n) {
+      status.textContent = `running… ${life.gen} / ${n}`;
+      setTimeout(chunk, 0);
+    } else {
+      status.textContent = `reached gen ${n} in ${((performance.now() - t0) / 1000).toFixed(2)} s`;
+      state.dirty = true;
+    }
+  };
+  chunk();
+}
+$("goto").addEventListener("click", () => gotoGen(parseInt($("gotoN").value, 10)));
+$("gotoN").addEventListener("keydown", (e) => { if (e.key === "Enter") gotoGen(parseInt(e.target.value, 10)); });
+
+// ---- view: zoom / pan / fit -----------------------------------------------
+
+const MIN_SCALE = 1 / 256, MAX_SCALE = 64;
+
+function dpr() { return window.devicePixelRatio || 1; }
+
+function resize() {
+  const r = dpr();
+  const w = Math.max(1, Math.round(main.clientWidth * r)), h = Math.max(1, Math.round(main.clientHeight * r));
+  if (w === canvas.width && h === canvas.height) return;
+  // keep the world point at the centre of the view fixed
+  state.vx += (canvas.width - w) / 2 / state.scale;
+  state.vy += (canvas.height - h) / 2 / state.scale;
+  canvas.width = w;
+  canvas.height = h;
+  state.dirty = true;
+  if (state.needFit) fit();
+}
+new ResizeObserver(resize).observe(main);
+
+function fit() {
+  // The page may be laid out at zero size (hidden tab / iframe); fit once it is not.
+  state.needFit = canvas.width < 16 || canvas.height < 16;
+  if (state.needFit) return;
+  const b = life.bounds() || (state.pattern && state.pattern.labels.length
+    ? { x0: state.pattern.labels[0].x, y0: state.pattern.labels[0].y,
+        x1: state.pattern.labels[0].x, y1: state.pattern.labels[0].y } : { x0: 0, y0: 0, x1: 0, y1: 0 });
+  const w = b.x1 - b.x0 + 1, h = b.y1 - b.y0 + 1;
+  const pad = 0.92;
+  let s = Math.min(canvas.width * pad / w, canvas.height * pad / h);
+  s = Math.min(MAX_SCALE / 2, Math.max(MIN_SCALE, s));
+  if (s >= 1) s = Math.floor(s);   // integer zoom avoids uneven cell widths
+  state.scale = s;
+  state.vx = (b.x0 + b.x1 + 1) / 2 - canvas.width / 2 / s;
+  state.vy = (b.y0 + b.y1 + 1) / 2 - canvas.height / 2 / s;
+  state.dirty = true;
+}
+$("fit").addEventListener("click", fit);
+$("showLabels").addEventListener("change", () => (state.dirty = true));
+$("showGrid").addEventListener("change", () => (state.dirty = true));
+
+function canvasPos(e) {
+  const rect = canvas.getBoundingClientRect(), r = dpr();
+  return [(e.clientX - rect.left) * r, (e.clientY - rect.top) * r];
+}
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const [mx, my] = canvasPos(e);
+  const wx = state.vx + mx / state.scale, wy = state.vy + my / state.scale;
+  const f = Math.pow(1.0015, -e.deltaY * (e.deltaMode === 1 ? 33 : 1));
+  state.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, state.scale * f));
+  state.vx = wx - mx / state.scale;   // keep the world point under the cursor fixed
+  state.vy = wy - my / state.scale;
+  state.dirty = true;
+}, { passive: false });
+
+let drag = null;
+canvas.addEventListener("pointerdown", (e) => {
+  const [mx, my] = canvasPos(e);
+  drag = { mx, my, vx: state.vx, vy: state.vy };
+  canvas.setPointerCapture(e.pointerId);
+  canvas.classList.add("dragging");
+});
+canvas.addEventListener("pointermove", (e) => {
+  const [mx, my] = canvasPos(e);
+  if (drag) {
+    state.vx = drag.vx - (mx - drag.mx) / state.scale;
+    state.vy = drag.vy - (my - drag.my) / state.scale;
+    state.dirty = true;
+  }
+  state.hover = [mx, my];
+  updateHud();
+});
+const endDrag = () => { drag = null; canvas.classList.remove("dragging"); };
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("pointerleave", () => { state.hover = null; updateHud(); });
+
+function updateHud() {
+  const parts = [];
+  if (state.hover) {
+    const x = Math.floor(state.vx + state.hover[0] / state.scale);
+    const y = Math.floor(state.vy + state.hover[1] / state.scale);
+    parts.push(`x ${x}  y ${y}`);
+  }
+  const s = state.scale;
+  parts.push(s >= 1 ? `zoom ${s.toFixed(s < 10 ? 1 : 0)} px/cell` : `zoom 1:${(1 / s).toFixed(1)}`);
+  $("hud").textContent = parts.join("   ");
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.key === " ") { e.preventDefault(); setPlaying(!state.playing); }
+  else if (e.key === "n" || e.key === "N") $("step").click();
+  else if (e.key === "f" || e.key === "F") fit();
+  else if (e.key === "r" || e.key === "R") $("reset").click();
+});
+
+// ---- rendering ------------------------------------------------------------
+
+let image = null, pixels = null;
+
+function render() {
+  const W = canvas.width, H = canvas.height;
+  if (!image || image.width !== W || image.height !== H) {
+    image = ctx.createImageData(W, H);
+    pixels = new Uint32Array(image.data.buffer);
+  }
+  pixels.fill(BG);
+  const s = state.scale, vx = state.vx, vy = state.vy;
+  // visible tile range
+  const tx0 = Math.floor(vx / TILE) - 1, ty0 = Math.floor(vy / TILE) - 1;
+  const tx1 = Math.floor((vx + W / s) / TILE) + 1, ty1 = Math.floor((vy + H / s) / TILE) + 1;
+  const gap = s >= 6 ? 1 : 0;   // leave room for grid lines when zoomed in
+
+  for (const t of life.tiles.values()) {
+    if (!t.pop || t.tx < tx0 || t.tx > tx1 || t.ty < ty0 || t.ty > ty1) continue;
+    const bx = t.tx * TILE, by = t.ty * TILE;
+    for (let r = 0; r < TILE; r++) {
+      let w = t.cur[r];
+      if (!w) continue;
+      const wy = by + r;
+      let py0 = Math.floor((wy - vy) * s), py1 = Math.floor((wy + 1 - vy) * s) - gap;
+      if (py1 <= py0) py1 = py0 + 1;   // zoomed out: several cells share one pixel row
+      if (py1 <= 0 || py0 >= H) continue;
+      if (py0 < 0) py0 = 0;
+      if (py1 > H) py1 = H;
+      while (w) {
+        const b = 31 - Math.clz32(w & -w);
+        w &= w - 1;
+        const wx = bx + b;
+        let px0 = Math.floor((wx - vx) * s), px1 = Math.floor((wx + 1 - vx) * s) - gap;
+        if (px1 <= px0) px1 = px0 + 1;
+        if (px1 <= 0 || px0 >= W) continue;
+        if (px0 < 0) px0 = 0;
+        if (px1 > W) px1 = W;
+        for (let py = py0; py < py1; py++) pixels.fill(FG, py * W + px0, py * W + px1);
+      }
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+
+  if ($("showGrid").checked && s >= 6) drawGrid(W, H, s, vx, vy);
+  if ($("showLabels").checked && state.pattern) drawLabels(W, H, s, vx, vy);
+  updateHud();
+}
+
+function drawGrid(W, H, s, vx, vy) {
+  ctx.save();
+  ctx.lineWidth = 1;
+  const x0 = Math.floor(vx), y0 = Math.floor(vy);
+  for (let pass = 0; pass < 2; pass++) {
+    // pass 0: every cell, pass 1: every 10th cell, slightly brighter
+    ctx.strokeStyle = pass ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.05)";
+    ctx.beginPath();
+    for (let x = x0; (x - vx) * s <= W; x++) {
+      if (pass && x % 10) continue;
+      const px = Math.floor((x - vx) * s) - 0.5;
+      ctx.moveTo(px, 0); ctx.lineTo(px, H);
+    }
+    for (let y = y0; (y - vy) * s <= H; y++) {
+      if (pass && y % 10) continue;
+      const py = Math.floor((y - vy) * s) - 0.5;
+      ctx.moveTo(0, py); ctx.lineTo(W, py);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawLabels(W, H, s, vx, vy) {
+  const r = dpr();
+  ctx.save();
+  ctx.font = `${Math.round(11 * r)}px system-ui, sans-serif`;
+  ctx.textBaseline = "bottom";
+  ctx.strokeStyle = ctx.fillStyle = LABEL_COLOR;
+  ctx.lineWidth = r;
+  // No opaque background: the text sits above-right of a ring around the cell,
+  // so it does not hide the cells it annotates.
+  ctx.shadowColor = "rgba(0,0,0,0.9)";
+  ctx.shadowBlur = 2 * r;
+  for (const l of state.pattern.labels) {
+    const px = (l.x + 0.5 - vx) * s, py = (l.y + 0.5 - vy) * s;
+    if (px < -400 * r || px > W + 10 * r || py < -10 * r || py > H + 30 * r) continue;
+    const rad = Math.max(2.5 * r, s * 0.75);
+    ctx.beginPath(); ctx.arc(px, py, rad, 0, 2 * Math.PI); ctx.stroke();
+    if (l.text) ctx.fillText(l.text, px + rad * 0.7 + 2 * r, py - rad * 0.7 - r);
+  }
+  ctx.restore();
+}
+
+// ---- main loop ------------------------------------------------------------
+
+function frame(now) {
+  if (state.playing && now - state.lastTick >= 1000 / state.fps - 1) {
+    state.lastTick = now;
+    const until = performance.now() + 100;   // never freeze the page for long
+    for (let i = 0; i < state.gpf && performance.now() < until; i++) life.step();
+    updateStats();
+    state.dirty = true;
+  }
+  if (state.dirty) { state.dirty = false; render(); }
+  requestAnimationFrame(frame);
+}
+
+resize();
+if (typeof window.EMBEDDED_RLE === "string") {
+  loadText(window.EMBEDDED_RLE, typeof window.EMBEDDED_NAME === "string" ? window.EMBEDDED_NAME : "");
+} else {
+  updateStats();
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
